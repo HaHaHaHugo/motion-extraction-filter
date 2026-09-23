@@ -19,19 +19,18 @@ class GasPlumeAmplifierApp:
     3) Optional binary CNN leak classifier from ONNX
     4) Dense optical flow inside the plume mask
     5) 8-direction output + direction confidence
-    6) Relative plume amount from ROI coverage
+    6) Leak detection support from plume coverage
 
     IMPORTANT
     ---------
-    - Amount/Coverage is image coverage, NOT gas concentration.
-    - The displayed heatmap is a temporal chroma heatmap, NOT Grad-CAM.
+        - The displayed heatmap is a temporal chroma heatmap, NOT Grad-CAM.
       True Grad-CAM requires a specific trained CNN and access to its
       convolutional feature maps/gradients.
     """
 
     def __init__(self, root):
         self.root = root
-        self.root.title("Gas Leak Detection - Direction & Relative Amount")
+        self.root.title("Gas Leak Detection - Direction Analysis")
         self.root.geometry("1180x840")
 
         # ------------------------------------------------------------
@@ -55,7 +54,7 @@ class GasPlumeAmplifierApp:
 
         # ------------------------------------------------------------
         # ROI
-        # detection_roi: where plume detection/amount/direction is allowed
+        # detection_roi: where plume detection/direction analysis is allowed
         # reference_roi: optional area used for automatic frequency estimate
         # ------------------------------------------------------------
         self.detection_roi = None
@@ -110,8 +109,6 @@ class GasPlumeAmplifierApp:
         self.current_direction = "WAITING"
         self.current_direction_confidence = 0.0
         self.current_flow_speed = 0.0
-        self.current_amount = "NONE"
-        self.current_coverage = 0.0
         self.current_centroid = None
         self.current_leak_status = "UNKNOWN"
         self.current_leak_confidence = 0.0
@@ -551,24 +548,18 @@ class GasPlumeAmplifierApp:
         cy = int(moments["m01"] / moments["m00"])
         return cx, cy
 
-    def calculate_gas_amount(self, mask, roi_mask):
+    def calculate_plume_coverage(self, mask, roi_mask):
+        """Return visible plume-mask coverage (%) inside the Detection ROI.
+
+        This value is used only as an internal detection cue. It is not a
+        measurement of gas amount or concentration.
+        """
         gas_pixels = int(cv2.countNonZero(mask))
         total_pixels = int(cv2.countNonZero(roi_mask))
         if total_pixels <= 0:
-            return 0.0, "NONE"
+            return 0.0
 
-        coverage = (gas_pixels / total_pixels) * 100.0
-
-        if coverage < self.min_coverage_for_gas:
-            amount = "NONE"
-        elif coverage < 5.0:
-            amount = "LOW"
-        elif coverage < 20.0:
-            amount = "MEDIUM"
-        else:
-            amount = "HIGH"
-
-        return coverage, amount
+        return (gas_pixels / total_pixels) * 100.0
 
     # ================================================================
     # OPTIONAL CNN
@@ -964,7 +955,7 @@ class GasPlumeAmplifierApp:
             )
             motion_mask = self.clean_motion_mask(motion_mask, roi_mask)
 
-            coverage, amount = self.calculate_gas_amount(
+            coverage = self.calculate_plume_coverage(
                 motion_mask, roi_mask
             )
             centroid = self.calculate_centroid(motion_mask)
@@ -1039,7 +1030,7 @@ class GasPlumeAmplifierApp:
             # Small status line on overlay
             cv2.putText(
                 overlay,
-                f"Leak:{leak_status} ({leak_source})  Coverage:{coverage:.2f}%",
+                f"Leak:{leak_status} ({leak_source})",
                 (8, 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.48,
@@ -1057,8 +1048,6 @@ class GasPlumeAmplifierApp:
                 "direction": direction,
                 "direction_confidence": dir_conf,
                 "flow_speed": flow_speed,
-                "amount": amount,
-                "coverage": coverage,
                 "centroid": centroid,
                 "leak_status": leak_status,
                 "leak_confidence": leak_conf,
@@ -1070,8 +1059,6 @@ class GasPlumeAmplifierApp:
             self.current_direction = direction
             self.current_direction_confidence = dir_conf
             self.current_flow_speed = flow_speed
-            self.current_amount = amount
-            self.current_coverage = coverage
             self.current_centroid = centroid
             self.current_leak_status = leak_status
             self.current_leak_confidence = leak_conf
@@ -1114,8 +1101,6 @@ class GasPlumeAmplifierApp:
             direction = self.current_direction
             dir_conf = self.current_direction_confidence
             flow_speed = self.current_flow_speed
-            amount = self.current_amount
-            coverage = self.current_coverage
             centroid = self.current_centroid
             leak_status = self.current_leak_status
             leak_conf = self.current_leak_confidence
@@ -1125,8 +1110,6 @@ class GasPlumeAmplifierApp:
             direction = data["direction"]
             dir_conf = data["direction_confidence"]
             flow_speed = data["flow_speed"]
-            amount = data["amount"]
-            coverage = data["coverage"]
             centroid = data["centroid"]
             leak_status = data["leak_status"]
             leak_conf = data["leak_confidence"]
@@ -1149,8 +1132,6 @@ class GasPlumeAmplifierApp:
             f"Dir. conf. : {dir_conf * 100:.1f}%",
             f"Flow speed : {flow_speed:.3f} px/frame",
             "",
-            f"Amount     : {amount}",
-            f"Coverage   : {coverage:.2f}% of Detection ROI",
         ]
 
         if centroid is not None:
@@ -1160,12 +1141,6 @@ class GasPlumeAmplifierApp:
 
         if threshold is not None:
             lines.append(f"Mask thr.  : {threshold}")
-
-        lines += [
-            "",
-            "Amount = relative visible plume coverage",
-            "not gas concentration."
-        ]
 
         return "\n".join(lines)
 
